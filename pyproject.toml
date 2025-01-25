@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webwebqueriedworker"
+version = "1.0"
+authors = [
+  { name="Kirill Biktimirov", email="16803695+kirillbiktya@users.noreply.github.com" },
+]
+description = "Web Queried Workers for my projects"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/kirillbiktya/webqueriedworker"
+
+[tool.setuptools]
+packages = [
+    "webqueriedworker"
+]
