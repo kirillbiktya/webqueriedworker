@@ -165,23 +165,23 @@ class WebQueriedWorkerPool:
             raise Exception('can remove only non Running workers')
 
     def _first_pending(self):
-        pending_workers = list(filter(lambda x: x.status == 'Pending', self.workers()))
-        if len(pending_workers) == 0:
+        pending_workers_ids = [x.id for x in self.workers() if x.status == 'Pending']
+        if len(pending_workers_ids) == 0:
             return None
         else:
-            return sorted(pending_workers, key=lambda x: x.create_date)[0]
+            return pending_workers_ids[0]
     
     def _running_count(self):
-        return len(list(filter(lambda x: x.status == 'Running', self.workers())))
+        return len([x for x in self.workers() if x.status == 'Running'])
     
     def _start_pending(self):
         while self.pending_starter_running:
             sleep(3.)
-            if self.max_running_workers >= self._running_count():
+            if self.max_running_workers <= self._running_count():
                 continue
 
-            pending_worker = self._first_pending()
-            if pending_worker is None:
+            pending_worker_id = self._first_pending()
+            if pending_worker_id is None:
                 continue
 
-            self.worker_by_id(pending_worker.id).start()
+            self.worker_by_id(pending_worker_id).start()
