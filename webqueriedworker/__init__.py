@@ -4,6 +4,8 @@ from random import randbytes
 from datetime import datetime
 from threading import Lock, Thread
 from typing import List, Callable
+from time import sleep
+from threading import Thread
 
 
 class WebQueriedWorkerStatus(Enum):
@@ -127,8 +129,15 @@ class WebQueriedWorker:
 
 
 class WebQueriedWorkerPool:
-    def __init__(self):
+    def __init__(self, max_running_workers: int = 1):
+        self.max_running_workers = max_running_workers
+        self.pending_starter = Thread(target=self._start_pending)
+        self.pending_starter_running = True
         self._workers: List[WebQueriedWorker] = []
+
+    def __del__(self):
+        self.pending_starter_running = False
+        sleep(4.)
 
     def workers(self):
         return self._workers
@@ -152,3 +161,25 @@ class WebQueriedWorkerPool:
             self._workers.remove(worker)
         else:
             raise Exception('can remove only non Running workers')
+
+    def _first_pending(self):
+        pending_workers = list(filter(lambda x: x.status == 'Pending', self.workers()))
+        if len(pending_workers) == 0:
+            return None
+        else:
+            return sorted(pending_workers, key=lambda x: x.create_date)[0]
+    
+    def _running_count(self):
+        return len(list(filter(lambda x: x.status == 'Running', self.workers())))
+    
+    def _start_pending(self):
+        while self.pending_starter_running:
+            sleep(3.)
+            if self.max_running_workers >= self._running_count():
+                continue
+
+            pending_worker = self._first_pending()
+            if pending_worker is None:
+                continue
+
+            pending_worker.start()
