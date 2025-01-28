@@ -184,4 +184,4 @@ class WebQueriedWorkerPool:
             if pending_worker is None:
                 continue
 
-            pending_worker.start()
+            self.worker_by_id(pending_worker.id).start()
