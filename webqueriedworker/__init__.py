@@ -130,10 +130,12 @@ class WebQueriedWorker:
 
 class WebQueriedWorkerPool:
     def __init__(self, max_running_workers: int = 1):
+        self._workers: List[WebQueriedWorker] = []
+
         self.max_running_workers = max_running_workers
         self.pending_starter = Thread(target=self._start_pending)
         self.pending_starter_running = True
-        self._workers: List[WebQueriedWorker] = []
+        self.pending_starter.start()
 
     def __del__(self):
         self.pending_starter_running = False
