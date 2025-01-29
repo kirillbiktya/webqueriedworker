@@ -129,8 +129,10 @@ class WebQueriedWorker:
 
 
 class WebQueriedWorkerPool:
-    def __init__(self, max_running_workers: int = 1):
+    def __init__(self, max_running_workers: int = 2):
         self._workers: List[WebQueriedWorker] = []
+
+        self.resource_lock = Lock()
 
         self.max_running_workers = max_running_workers
         self.pending_starter = Thread(target=self._start_pending)
@@ -139,28 +141,38 @@ class WebQueriedWorkerPool:
 
     def __del__(self):
         self.pending_starter_running = False
-        sleep(4.)
+        self.pending_starter.join()
 
     def workers(self):
-        return self._workers
+        self.resource_lock.acquire()
+        ret = self._workers
+        self.resource_lock.release()
+        return ret
 
     def worker_by_id(self, worker_id: str):
         try:
+            self.resource_lock.acquire()
             worker = next(filter(lambda x: x.id == worker_id, self._workers))
+            self.resource_lock.release()
             return worker
         except StopIteration:
+            self.resource_lock.release()
             raise FileNotFoundError()
         
 
     def add_worker(self, worker: WebQueriedWorker):
+        self.resource_lock.acquire()
         self._workers.append(worker)
+        self.resource_lock.release()
 
     def delete_worker(self, worker_id: str):
         worker = self.worker_by_id(worker_id)
         if worker.runtime_status in [
             WebQueriedWorkerStatus.Finished, WebQueriedWorkerStatus.Stopped, WebQueriedWorkerStatus.Failed, WebQueriedWorkerStatus.Pending
         ]:
+            self.resource_lock.acquire()
             self._workers.remove(worker)
+            self.resource_lock.release()
         else:
             raise Exception('can remove only non Running workers')
 
