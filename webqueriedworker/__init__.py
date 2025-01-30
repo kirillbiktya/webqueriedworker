@@ -139,7 +139,7 @@ class WebQueriedWorkerPool:
         self.pending_starter_running = True
         self.pending_starter.start()
 
-    def __del__(self):
+    def stop(self):
         self.pending_starter_running = False
         self.pending_starter.join()
 
@@ -159,7 +159,6 @@ class WebQueriedWorkerPool:
             self.resource_lock.release()
             raise FileNotFoundError()
         
-
     def add_worker(self, worker: WebQueriedWorker):
         self.resource_lock.acquire()
         self._workers.append(worker)
