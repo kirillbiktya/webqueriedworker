@@ -18,8 +18,8 @@ class WebQueriedWorkerStatus(Enum):
 
 
 class WebQueriedWorker:
-    def __init__(self, thread_func: Callable = None):
-        self.name = ''
+    def __init__(self, thread_func: Callable = None, name: str = 'WebQueriedWorker'):
+        self.name = name
         self.id = md5(randbytes(256)).hexdigest()
         self.create_date = datetime.now()
         self.start_date = None
