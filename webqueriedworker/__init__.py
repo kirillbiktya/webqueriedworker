@@ -69,6 +69,7 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.Finished
                     self.finish_date = datetime.now()
                     self.write_to_log(f'WebQueriedWorker finished at {self.finish_date}')
+                    del self.worker
                 else:
                     raise Exception('cant finish non Running worker')
             case 'Stopping':
@@ -85,6 +86,7 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.Stopped
                     self.finish_date = datetime.now()
                     self.write_to_log(f'WebQueriedWorker stopped at {self.finish_date}')
+                    del self.worker
                 else:
                     raise Exception('cant set status Stopped on non Stopping worker')
             case 'Failed':
@@ -92,6 +94,7 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.Failed
                     self.finish_date = datetime.now()
                     self.write_to_log(f'WebQueriedWorker failed at {self.finish_date}')
+                    del self.worker
                 else:
                     raise Exception('cant fail non Running worker')
             case _:
@@ -120,9 +123,12 @@ class WebQueriedWorker:
         """
         Для использования этого метода в main() должна быть определена проверка на статус Stopping
         """
-        self.runtime_status = WebQueriedWorkerStatus.Stopping
-        self.worker.join()
-        self.runtime_status = WebQueriedWorkerStatus.Stopped
+        if self.stoppable:
+            self.runtime_status = WebQueriedWorkerStatus.Stopping
+            self.worker.join()
+            self.runtime_status = WebQueriedWorkerStatus.Stopped
+        else: 
+            raise NotImplementedError('You need to implement stop logic in self.main and set self.stopppable = True')
 
     def main(self):
         pass
