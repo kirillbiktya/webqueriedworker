@@ -54,21 +54,21 @@ class WebQueriedWorker:
                 if self._runtime_status is None:
                     self._runtime_status = WebQueriedWorkerStatus.Pending
                     self.create_date = datetime.now()
-                    self.write_to_log(f'WebQueriedWorker created at {self.create_date}')
+                    self.write_to_log(f'{self.name} created at {self.create_date}')
                 else:
                     raise Exception('cant set Pending status on existing worker')
             case 'Running':
                 if self._runtime_status == WebQueriedWorkerStatus.Pending:
                     self._runtime_status = WebQueriedWorkerStatus.Running
                     self.start_date = datetime.now()
-                    self.write_to_log(f'WebQueriedWorker started at {self.start_date}')
+                    self.write_to_log(f'{self.name} started at {self.start_date}')
                 else:
                     raise Exception('cant start non Pending worker')
             case 'Finished':
                 if self._runtime_status == WebQueriedWorkerStatus.Running:
                     self._runtime_status = WebQueriedWorkerStatus.Finished
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'WebQueriedWorker finished at {self.finish_date}')
+                    self.write_to_log(f'{self.name} finished at {self.finish_date}')
                     del self.worker
                 else:
                     raise Exception('cant finish non Running worker')
@@ -76,7 +76,7 @@ class WebQueriedWorker:
                 if self.stoppable:
                     if self._runtime_status == WebQueriedWorkerStatus.Running:
                         self._runtime_status = WebQueriedWorkerStatus.Stopping
-                        self.write_to_log('WebQueriedWorker received stop signal!')
+                        self.write_to_log(f'{self.name} received stop signal!')
                     else:
                         raise Exception('cant stop non Running worker')
                 else:
@@ -85,7 +85,7 @@ class WebQueriedWorker:
                 if self._runtime_status == WebQueriedWorkerStatus.Stopping:
                     self._runtime_status = WebQueriedWorkerStatus.Stopped
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'WebQueriedWorker stopped at {self.finish_date}')
+                    self.write_to_log(f'{self.name} stopped at {self.finish_date}')
                     del self.worker
                 else:
                     raise Exception('cant set status Stopped on non Stopping worker')
@@ -93,7 +93,7 @@ class WebQueriedWorker:
                 if self._runtime_status == WebQueriedWorkerStatus.Running:
                     self._runtime_status = WebQueriedWorkerStatus.Failed
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'WebQueriedWorker failed at {self.finish_date}')
+                    self.write_to_log(f'{self.name} failed at {self.finish_date}')
                     del self.worker
                 else:
                     raise Exception('cant fail non Running worker')
