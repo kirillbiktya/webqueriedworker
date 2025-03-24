@@ -40,7 +40,7 @@ class WebQueriedWorker:
 
     def write_to_log(self, message: str):
         self.worker_log_lock.acquire()
-        self.worker_log += message + '\n'
+        self.worker_log += f'{str(datetime.now())}: {message}\n'
         self.worker_log_lock.release()
     
     @property
@@ -54,49 +54,49 @@ class WebQueriedWorker:
                 if self._runtime_status is None:
                     self._runtime_status = WebQueriedWorkerStatus.Pending
                     self.create_date = datetime.now()
-                    self.write_to_log(f'{self.name} created at {self.create_date}')
+                    self.write_to_log(f'Создан процесс {self.name}')
                 else:
-                    raise Exception('cant set Pending status on existing worker')
+                    raise Exception('Нельзя установить статус "Ожидает"')
             case 'Running':
                 if self._runtime_status == WebQueriedWorkerStatus.Pending:
                     self._runtime_status = WebQueriedWorkerStatus.Running
                     self.start_date = datetime.now()
-                    self.write_to_log(f'{self.name} started at {self.start_date}')
+                    self.write_to_log(f'Запущен процесс {self.name}')
                 else:
-                    raise Exception('cant start non Pending worker')
+                    raise Exception('Нельзя запустить процесс вне статуса "Ожидает"')
             case 'Finished':
                 if self._runtime_status == WebQueriedWorkerStatus.Running:
                     self._runtime_status = WebQueriedWorkerStatus.Finished
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'{self.name} finished at {self.finish_date}')
+                    self.write_to_log(f'Завершен процесс {self.name}')
                     del self.worker
                 else:
-                    raise Exception('cant finish non Running worker')
+                    raise Exception('Нельзя завершить процесс вне статуса "Работает"')
             case 'Stopping':
                 if self.stoppable:
                     if self._runtime_status == WebQueriedWorkerStatus.Running:
                         self._runtime_status = WebQueriedWorkerStatus.Stopping
-                        self.write_to_log(f'{self.name} received stop signal!')
+                        self.write_to_log(f'Процесс {self.name} получил стоп сигнал!')
                     else:
-                        raise Exception('cant stop non Running worker')
+                        raise Exception('Нельзя остановить процесс вне статуса "Работает"')
                 else:
-                    raise Exception('this worker cannot be stopped')
+                    raise Exception('Этот процесс не может быть остановлен')
             case 'Stopped':
                 if self._runtime_status == WebQueriedWorkerStatus.Stopping:
                     self._runtime_status = WebQueriedWorkerStatus.Stopped
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'{self.name} stopped at {self.finish_date}')
+                    self.write_to_log(f'Остановлен процесс {self.name}')
                     del self.worker
                 else:
-                    raise Exception('cant set status Stopped on non Stopping worker')
+                    raise Exception('Нельзя установить статус "Остановлен" процессу вне статуса "Останавливается"')
             case 'Failed':
                 if self._runtime_status == WebQueriedWorkerStatus.Running:
                     self._runtime_status = WebQueriedWorkerStatus.Failed
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'{self.name} failed at {self.finish_date}')
+                    self.write_to_log(f'Процесс {self.name} завершился с ошибкой')
                     del self.worker
                 else:
-                    raise Exception('cant fail non Running worker')
+                    raise Exception('Нельзя установить статус "Ошибка" процессу вне статуса "Работает"')
             case _:
                 pass
 
@@ -117,7 +117,7 @@ class WebQueriedWorker:
             self.worker.start()
         except Exception as e:
             self.runtime_status = WebQueriedWorkerStatus.Failed
-            self.write_to_log(f'Exception raised on start():\n{str(e)}')
+            self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
 
     def stop(self):
         """
@@ -179,7 +179,7 @@ class WebQueriedWorkerPool:
             self._workers.remove(worker)
             self.resource_lock.release()
         else:
-            raise Exception('can remove only non Running workers')
+            raise Exception('Можно удалить процесс только в статусах "Завершен", "Остановлен", "Ошибка", "Ожидает"')
 
     def _first_pending(self):
         pending_workers_ids = [x.id for x in self.workers() if x.status == 'Pending']
