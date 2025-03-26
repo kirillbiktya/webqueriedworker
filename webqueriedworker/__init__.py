@@ -222,16 +222,24 @@ class WebQueriedWorkerPool:
     def add_worker(self, worker: WebQueriedWorker):
         with self.resource_lock:
             self._workers.append(worker)
+    
+    def add_workers(self, workers: List[WebQueriedWorker]):
+        with self.resource_lock:
+            self._workers.extend(workers)
 
     def delete_worker(self, worker_id: str):
         worker = self.worker_by_id(worker_id)
         if worker.runtime_status in [
-            WebQueriedWorkerStatus.Finished, WebQueriedWorkerStatus.Stopped, WebQueriedWorkerStatus.Failed, WebQueriedWorkerStatus.Pending
+            WebQueriedWorkerStatus.Failed, 
+            WebQueriedWorkerStatus.Cancelled, 
+            WebQueriedWorkerStatus.Stopped, 
+            WebQueriedWorkerStatus.Finished, 
+            WebQueriedWorkerStatus.PartiallyFailed
         ]:
             with self.resource_lock:
                 self._workers.remove(worker)
         else:
-            raise Exception('Можно удалить процесс только в статусах "Завершен", "Остановлен", "Ошибка", "Ожидает"')
+            raise Exception('Можно удалить процесс только в статусах "Ошибка", "Отменен", "Остановлен", "Завершен", "Есть ошибки"')
     
     def _pending_workers(self):
         pending_workers = [x for x in self.workers() if x.status == 'Pending']
