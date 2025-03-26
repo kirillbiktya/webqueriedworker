@@ -5,7 +5,12 @@ from datetime import datetime
 from threading import Lock, Thread
 from typing import List, Callable
 from time import sleep
-from threading import Thread
+from threading import Thread, Event
+from queue import Queue
+
+
+class StoppedException(Exception):
+    pass
 
 
 class WebQueriedWorkerStatus(Enum):
@@ -14,11 +19,32 @@ class WebQueriedWorkerStatus(Enum):
     Finished = 2
     Stopping = 3
     Stopped = 4
-    Failed = 5
+    Cancelled = 5
+    Failed = 6
+    PartiallyFailed = 7
+
+
+WORKER_BAD_STATUSES = {
+    WebQueriedWorkerStatus.Stopping, 
+    WebQueriedWorkerStatus.Stopped, 
+    WebQueriedWorkerStatus.Cancelled, 
+    WebQueriedWorkerStatus.Failed, 
+    WebQueriedWorkerStatus.PartiallyFailed
+}
 
 
 class WebQueriedWorker:
-    def __init__(self, thread_func: Callable = None, name: str = 'WebQueriedWorker'):
+    def __init__(
+            self, 
+            worker_pool: 'WebQueriedWorkerPool',
+            thread_func: Callable = None, 
+            name: str = 'WebQueriedWorker', 
+            parent: str = None, 
+            after: List[str] = None, 
+            childs: List[str] = None, 
+            brothers: List[str] = None
+        ):
+        self.worker_pool = worker_pool
         self.name = name
         self.id = md5(randbytes(256)).hexdigest()
         self.create_date = datetime.now()
@@ -26,8 +52,6 @@ class WebQueriedWorker:
         self.finish_date = None
         self._runtime_status = None
 
-        self.stoppable = False  # this must be set to True ONLY if WebQueriedWorkerStatus.Stopping check implemented in main()!!!
-        
         if thread_func is None:
             self.worker = Thread(target=self.main)
         else:
@@ -38,10 +62,25 @@ class WebQueriedWorker:
 
         self.runtime_status = WebQueriedWorkerStatus.Pending
 
+        self.parent = parent
+        self.after = after
+        self.childs = childs
+        self.brothers = brothers
+
+        self.stop_event = Event()
+
+    def _should_i_stop_myself(self):
+        if self.stop_event.is_set() or self.worker_pool.worker_should_stop(self):
+            self.runtime_status = WebQueriedWorkerStatus.Stopping
+            raise StoppedException()
+
     def write_to_log(self, message: str):
-        self.worker_log_lock.acquire()
-        self.worker_log += f'{str(datetime.now())}: {message}\n'
-        self.worker_log_lock.release()
+        with self.worker_log_lock:
+            self.worker_log += f'{str(datetime.now())}: {message}\n'
+    
+    @property
+    def is_child(self):
+        return self.parent is not None
     
     @property
     def runtime_status(self):
@@ -73,14 +112,11 @@ class WebQueriedWorker:
                 else:
                     raise Exception('Нельзя завершить процесс вне статуса "Работает"')
             case 'Stopping':
-                if self.stoppable:
-                    if self._runtime_status == WebQueriedWorkerStatus.Running:
-                        self._runtime_status = WebQueriedWorkerStatus.Stopping
-                        self.write_to_log(f'Процесс {self.name} получил стоп сигнал!')
-                    else:
-                        raise Exception('Нельзя остановить процесс вне статуса "Работает"')
+                if self._runtime_status == WebQueriedWorkerStatus.Running:
+                    self._runtime_status = WebQueriedWorkerStatus.Stopping
+                    self.write_to_log(f'Процесс {self.name} получил стоп сигнал!')
                 else:
-                    raise Exception('Этот процесс не может быть остановлен')
+                    raise Exception('Нельзя остановить процесс вне статуса "Работает"')
             case 'Stopped':
                 if self._runtime_status == WebQueriedWorkerStatus.Stopping:
                     self._runtime_status = WebQueriedWorkerStatus.Stopped
@@ -90,13 +126,29 @@ class WebQueriedWorker:
                 else:
                     raise Exception('Нельзя установить статус "Остановлен" процессу вне статуса "Останавливается"')
             case 'Failed':
-                if self._runtime_status == WebQueriedWorkerStatus.Running:
+                if self._runtime_status in {WebQueriedWorkerStatus.Running, WebQueriedWorkerStatus.Pending}:
                     self._runtime_status = WebQueriedWorkerStatus.Failed
                     self.finish_date = datetime.now()
-                    self.write_to_log(f'Процесс {self.name} завершился с ошибкой')
+                    self.write_to_log(f'Процесс {self.name} завершился с необрабатываемой ошибкой')
                     del self.worker
                 else:
                     raise Exception('Нельзя установить статус "Ошибка" процессу вне статуса "Работает"')
+            case 'PartiallyFailed':
+                if self._runtime_status == WebQueriedWorkerStatus.Running:
+                    self._runtime_status = WebQueriedWorkerStatus.PartiallyFailed
+                    self.finish_date = datetime.now()
+                    self.write_to_log(f'Процесс {self.name} завершился с ошибками')
+                    del self.worker
+                else:
+                    raise Exception('Нельзя установить статус "Есть ошибки" процессу вне статуса "Работает"')
+            case 'Cancelled':
+                if self._runtime_status == WebQueriedWorkerStatus.Pending:
+                    self._runtime_status = WebQueriedWorkerStatus.Cancelled
+                    self.finish_date = datetime.now()
+                    self.write_to_log(f'Процесс {self.name} отменен из-за ошибок связанных процессов')
+                    del self.worker
+                else:
+                    raise Exception('Нельзя установить статус "Отменен" процессу вне статуса "Ожидает"')
             case _:
                 pass
 
@@ -106,9 +158,8 @@ class WebQueriedWorker:
 
     @property
     def log(self):
-        self.worker_log_lock.acquire()
-        ret = self.worker_log
-        self.worker_log_lock.release()
+        with self.worker_log_lock:
+            ret = self.worker_log
         return ret
 
     def start(self):
@@ -120,22 +171,20 @@ class WebQueriedWorker:
             self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
 
     def stop(self):
-        """
-        Для использования этого метода в main() должна быть определена проверка на статус Stopping
-        """
-        if self.stoppable:
-            self.runtime_status = WebQueriedWorkerStatus.Stopping
-            self.worker.join()
-            self.runtime_status = WebQueriedWorkerStatus.Stopped
-        else: 
-            raise NotImplementedError('You need to implement stop logic in self.main and set self.stopppable = True')
+        if self.runtime_status == WebQueriedWorkerStatus.Running:
+            self.stop_event.set()
+        else:
+            raise Exception('Процесс не может быть остановлен в данном статусе!')
+
+    def cancel(self):
+        self.runtime_status = WebQueriedWorkerStatus.Cancelled
 
     def main(self):
         pass
 
 
 class WebQueriedWorkerPool:
-    def __init__(self, max_running_workers: int = 2):
+    def __init__(self, max_running_workers: int = 10):
         self._workers: List[WebQueriedWorker] = []
 
         self.resource_lock = Lock()
@@ -149,10 +198,10 @@ class WebQueriedWorkerPool:
         self.pending_starter_running = False
         self.pending_starter.join()
 
+    #region worker crud
     def workers(self):
-        self.resource_lock.acquire()
-        ret = self._workers
-        self.resource_lock.release()
+        with self.resource_lock:
+            ret = self._workers
         return ret
 
     def worker_by_id(self, worker_id: str):
@@ -165,40 +214,83 @@ class WebQueriedWorkerPool:
             self.resource_lock.release()
             raise FileNotFoundError()
         
+    def workers_by_id(self, worker_ids: List[str]):
+        with self.resource_lock:
+            worker = list(filter(lambda x: x.id in worker_ids, self._workers))
+        return worker
+        
     def add_worker(self, worker: WebQueriedWorker):
-        self.resource_lock.acquire()
-        self._workers.append(worker)
-        self.resource_lock.release()
+        with self.resource_lock:
+            self._workers.append(worker)
 
     def delete_worker(self, worker_id: str):
         worker = self.worker_by_id(worker_id)
         if worker.runtime_status in [
             WebQueriedWorkerStatus.Finished, WebQueriedWorkerStatus.Stopped, WebQueriedWorkerStatus.Failed, WebQueriedWorkerStatus.Pending
         ]:
-            self.resource_lock.acquire()
-            self._workers.remove(worker)
-            self.resource_lock.release()
+            with self.resource_lock:
+                self._workers.remove(worker)
         else:
             raise Exception('Можно удалить процесс только в статусах "Завершен", "Остановлен", "Ошибка", "Ожидает"')
-
-    def _first_pending(self):
-        pending_workers_ids = [x.id for x in self.workers() if x.status == 'Pending']
-        if len(pending_workers_ids) == 0:
-            return None
-        else:
-            return pending_workers_ids[0]
     
-    def _running_count(self):
+    def _pending_workers(self):
+        pending_workers = [x for x in self.workers() if x.status == 'Pending']
+        return pending_workers
+    
+    @property
+    def running_count(self):
         return len([x for x in self.workers() if x.status == 'Running'])
+    #endregion
+
+    def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker):
+        if worker.after:
+            after_workers = self.workers_by_id(worker.after)
+            if any([x.runtime_status in WORKER_BAD_STATUSES for x in after_workers]):
+                return 'cancel'
+            
+            if any([x.runtime_status != WebQueriedWorkerStatus.Finished for x in after_workers]):
+                return 'wait'
+        
+        if worker.brothers:
+            brother_workers = self.workers_by_id(worker.brothers)
+            if any([x.runtime_status in WORKER_BAD_STATUSES for x in brother_workers]):
+                return 'cancel'
+        
+        return 'run'
+
+    #region worker-invoked checks    
+    def worker_should_stop(self, worker: WebQueriedWorker):
+        if worker.brothers:
+            brother_workers = self.workers_by_id(worker.brothers)
+            if any([x.runtime_status in WORKER_BAD_STATUSES for x in brother_workers]):
+                return True
+        return False
+    
+    def worker_should_partially_fail(self, worker: WebQueriedWorker):
+        if worker.childs:
+            child_workers = self.workers_by_id(worker.childs)
+            if any([x.runtime_status in WORKER_BAD_STATUSES for x in child_workers]):
+                return True
+        return False
+    #endregion
     
     def _start_pending(self):
         while self.pending_starter_running:
             sleep(3.)
-            if self.max_running_workers <= self._running_count():
-                continue
+            pending_workers = self._pending_workers()
+            for worker in pending_workers:
+                if self.running_count >= self.max_running_workers:
+                    break
 
-            pending_worker_id = self._first_pending()
-            if pending_worker_id is None:
-                continue
-
-            self.worker_by_id(pending_worker_id).start()
+                action = self._check_worker_dependencies_before_start(worker)
+                match action:
+                    case 'wait':
+                        continue
+                    case 'cancel':
+                        worker.cancel()
+                        continue
+                    case 'run':
+                        worker.start()
+                        continue
+                    case _:
+                        continue
