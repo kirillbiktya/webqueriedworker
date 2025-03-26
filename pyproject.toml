@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webqueriedworker"
-version = "1.4dev"
+version = "1.4.1dev"
 authors = [
   { name="Kirill Biktimirov", email="16803695+kirillbiktya@users.noreply.github.com" },
 ]
