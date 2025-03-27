@@ -2,11 +2,9 @@ from enum import Enum
 from hashlib import md5
 from random import randbytes
 from datetime import datetime
-from threading import Lock, Thread
 from typing import List, Callable
 from time import sleep
-from threading import Thread, Event
-from queue import Queue
+from threading import Thread, Event, Lock
 
 
 class StoppedException(Exception):
@@ -40,9 +38,8 @@ class WebQueriedWorker:
             thread_func: Callable = None, 
             name: str = 'WebQueriedWorker', 
             parent: str = None, 
-            after: List[str] = None, 
-            childs: List[str] = None, 
-            brothers: List[str] = None
+            after: List[str] = [], 
+            childs: List[str] = []
         ):
         self.worker_pool = worker_pool
         self.name = name
@@ -65,12 +62,25 @@ class WebQueriedWorker:
         self.parent = parent
         self.after = after
         self.childs = childs
-        self.brothers = brothers
 
         self.stop_event = Event()
 
+    def to_dict(self):
+        with self.worker_log_lock:
+            ret = {
+                'id': self.id,
+                'name': self.name,
+                'status': self.status,
+                'create_date': str(self.create_date), 
+                'start_date': str(self.start_date), 
+                'finish_date': str(self.finish_date),
+                'log': self.log,
+                'childs': self.childs
+            }
+        return ret
+
     def _should_i_stop_myself(self):
-        if self.stop_event.is_set() or self.worker_pool.worker_should_stop(self):
+        if self.stop_event.is_set():
             self.runtime_status = WebQueriedWorkerStatus.Stopping
             raise StoppedException()
 
@@ -259,21 +269,9 @@ class WebQueriedWorkerPool:
             if any([x.runtime_status != WebQueriedWorkerStatus.Finished for x in after_workers]):
                 return 'wait'
         
-        if worker.brothers:
-            brother_workers = self.workers_by_id(worker.brothers)
-            if any([x.runtime_status in WORKER_BAD_STATUSES for x in brother_workers]):
-                return 'cancel'
-        
         return 'run'
 
-    #region worker-invoked checks    
-    def worker_should_stop(self, worker: WebQueriedWorker):
-        if worker.brothers:
-            brother_workers = self.workers_by_id(worker.brothers)
-            if any([x.runtime_status in WORKER_BAD_STATUSES for x in brother_workers]):
-                return True
-        return False
-    
+    #region worker-invoked checks
     def worker_should_partially_fail(self, worker: WebQueriedWorker):
         if worker.childs:
             child_workers = self.workers_by_id(worker.childs)
