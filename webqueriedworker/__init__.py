@@ -75,7 +75,8 @@ class WebQueriedWorker:
                 'start_date': str(self.start_date), 
                 'finish_date': str(self.finish_date),
                 'log': self.log,
-                'childs': self.childs
+                'after': [x.to_dict() for x in self.worker_pool.workers_by_id(self.after)],
+                'childs': [x.to_dict() for x in self.worker_pool.workers_by_id(self.childs)]
             }
         return ret
 
