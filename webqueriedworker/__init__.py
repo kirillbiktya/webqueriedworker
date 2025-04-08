@@ -4,27 +4,19 @@ from random import randbytes
 from datetime import datetime
 from typing import List, Callable
 from time import sleep
-from threading import Thread, Event, Lock
-
-
-class StoppedException(Exception):
-    pass
+from threading import Thread, Lock
 
 
 class WebQueriedWorkerStatus(Enum):
     Pending = 0
     Running = 1
     Finished = 2
-    Stopping = 3
-    Stopped = 4
-    Cancelled = 5
-    Failed = 6
-    PartiallyFailed = 7
+    Cancelled = 3
+    Failed = 4
+    PartiallyFailed = 5
 
 
 WORKER_BAD_STATUSES = {
-    WebQueriedWorkerStatus.Stopping, 
-    WebQueriedWorkerStatus.Stopped, 
     WebQueriedWorkerStatus.Cancelled, 
     WebQueriedWorkerStatus.Failed, 
     WebQueriedWorkerStatus.PartiallyFailed
@@ -63,11 +55,10 @@ class WebQueriedWorker:
         self.after = after
         self.childs = childs
 
-        self.stop_event = Event()
-
     def to_dict(self):
         with self.worker_log_lock:
             ret = {
+                'class_name': self.__class__.__name__,
                 'id': self.id,
                 'name': self.name,
                 'status': self.status,
@@ -75,15 +66,11 @@ class WebQueriedWorker:
                 'start_date': str(self.start_date), 
                 'finish_date': str(self.finish_date),
                 'log': self.log,
-                'after': [x.to_dict() for x in self.worker_pool.workers_by_id(self.after)],
-                'childs': [x.to_dict() for x in self.worker_pool.workers_by_id(self.childs)]
+                'after': self.after,
+                'childs': self.childs,
+                'parent': self.parent
             }
         return ret
-
-    def _should_i_stop_myself(self):
-        if self.stop_event.is_set():
-            self.runtime_status = WebQueriedWorkerStatus.Stopping
-            raise StoppedException()
 
     def write_to_log(self, message: str):
         with self.worker_log_lock:
@@ -122,20 +109,6 @@ class WebQueriedWorker:
                     del self.worker
                 else:
                     raise Exception('Нельзя завершить процесс вне статуса "Работает"')
-            case 'Stopping':
-                if self._runtime_status == WebQueriedWorkerStatus.Running:
-                    self._runtime_status = WebQueriedWorkerStatus.Stopping
-                    self.write_to_log(f'Процесс {self.name} получил стоп сигнал!')
-                else:
-                    raise Exception('Нельзя остановить процесс вне статуса "Работает"')
-            case 'Stopped':
-                if self._runtime_status == WebQueriedWorkerStatus.Stopping:
-                    self._runtime_status = WebQueriedWorkerStatus.Stopped
-                    self.finish_date = datetime.now()
-                    self.write_to_log(f'Остановлен процесс {self.name}')
-                    del self.worker
-                else:
-                    raise Exception('Нельзя установить статус "Остановлен" процессу вне статуса "Останавливается"')
             case 'Failed':
                 if self._runtime_status in {WebQueriedWorkerStatus.Running, WebQueriedWorkerStatus.Pending}:
                     self._runtime_status = WebQueriedWorkerStatus.Failed
@@ -181,12 +154,6 @@ class WebQueriedWorker:
             self.runtime_status = WebQueriedWorkerStatus.Failed
             self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
 
-    def stop(self):
-        if self.runtime_status == WebQueriedWorkerStatus.Running:
-            self.stop_event.set()
-        else:
-            raise Exception('Процесс не может быть остановлен в данном статусе!')
-
     def cancel(self):
         self.runtime_status = WebQueriedWorkerStatus.Cancelled
 
@@ -227,8 +194,8 @@ class WebQueriedWorkerPool:
         
     def workers_by_id(self, worker_ids: List[str]):
         with self.resource_lock:
-            worker = list(filter(lambda x: x.id in worker_ids, self._workers))
-        return worker
+            workers = list(filter(lambda x: x.id in worker_ids, self._workers))
+        return workers
         
     def add_worker(self, worker: WebQueriedWorker):
         with self.resource_lock:
@@ -243,14 +210,13 @@ class WebQueriedWorkerPool:
         if worker.runtime_status in [
             WebQueriedWorkerStatus.Failed, 
             WebQueriedWorkerStatus.Cancelled, 
-            WebQueriedWorkerStatus.Stopped, 
             WebQueriedWorkerStatus.Finished, 
             WebQueriedWorkerStatus.PartiallyFailed
         ]:
             with self.resource_lock:
                 self._workers.remove(worker)
         else:
-            raise Exception('Можно удалить процесс только в статусах "Ошибка", "Отменен", "Остановлен", "Завершен", "Есть ошибки"')
+            raise Exception('Можно удалить процесс только в статусах "Ошибка", "Отменен", "Завершен", "Есть ошибки"')
     
     def _pending_workers(self):
         pending_workers = [x for x in self.workers() if x.status == 'Pending']
