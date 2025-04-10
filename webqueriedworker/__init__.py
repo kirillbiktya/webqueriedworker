@@ -47,7 +47,7 @@ class WebQueriedWorker:
             self.worker = Thread(target=thread_func)
         
         self.worker_log = ''
-        self.worker_log_lock = Lock()
+        # self.worker_log_lock = Lock()
 
         self.runtime_status = WebQueriedWorkerStatus.Pending
 
@@ -56,8 +56,8 @@ class WebQueriedWorker:
         self.childs = childs
 
     def to_dict(self):
-        with self.worker_log_lock:
-            ret = {
+        # with self.worker_log_lock:
+        ret = {
                 'class_name': self.__class__.__name__,
                 'id': self.id,
                 'name': self.name,
@@ -73,7 +73,7 @@ class WebQueriedWorker:
         return ret
 
     def write_to_log(self, message: str):
-        with self.worker_log_lock:
+        # with self.worker_log_lock:
             self.worker_log += f'{str(datetime.now())}: {message}\n'
     
     @property
@@ -142,8 +142,8 @@ class WebQueriedWorker:
 
     @property
     def log(self):
-        with self.worker_log_lock:
-            ret = self.worker_log
+        # with self.worker_log_lock:
+        ret = self.worker_log
         return ret
 
     def start(self):
@@ -165,7 +165,7 @@ class WebQueriedWorkerPool:
     def __init__(self, max_running_workers: int = 10):
         self._workers: List[WebQueriedWorker] = []
 
-        self.resource_lock = Lock()
+        # self.resource_lock = Lock()
 
         self.max_running_workers = max_running_workers
         self.pending_starter = Thread(target=self._start_pending)
@@ -178,31 +178,31 @@ class WebQueriedWorkerPool:
 
     #region worker crud
     def workers(self):
-        with self.resource_lock:
-            ret = self._workers
+        # with self.resource_lock:
+        ret = self._workers
         return ret
 
     def worker_by_id(self, worker_id: str):
         try:
-            self.resource_lock.acquire()
+            # self.resource_lock.acquire()
             worker = next(filter(lambda x: x.id == worker_id, self._workers))
-            self.resource_lock.release()
+            # self.resource_lock.release()
             return worker
         except StopIteration:
-            self.resource_lock.release()
+            # self.resource_lock.release()
             raise FileNotFoundError()
         
     def workers_by_id(self, worker_ids: List[str]):
-        with self.resource_lock:
-            workers = list(filter(lambda x: x.id in worker_ids, self._workers))
+        # with self.resource_lock:
+        workers = list(filter(lambda x: x.id in worker_ids, self._workers))
         return workers
         
     def add_worker(self, worker: WebQueriedWorker):
-        with self.resource_lock:
+        # with self.resource_lock:
             self._workers.append(worker)
     
     def add_workers(self, workers: List[WebQueriedWorker]):
-        with self.resource_lock:
+        # with self.resource_lock:
             self._workers.extend(workers)
 
     def delete_worker(self, worker_id: str):
@@ -213,7 +213,7 @@ class WebQueriedWorkerPool:
             WebQueriedWorkerStatus.Finished, 
             WebQueriedWorkerStatus.PartiallyFailed
         ]:
-            with self.resource_lock:
+            # with self.resource_lock:
                 self._workers.remove(worker)
         else:
             raise Exception('Можно удалить процесс только в статусах "Ошибка", "Отменен", "Завершен", "Есть ошибки"')
