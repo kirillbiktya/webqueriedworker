@@ -30,8 +30,8 @@ class WebQueriedWorker:
             thread_func: Callable = None, 
             name: str = 'WebQueriedWorker', 
             parent: str = None, 
-            after: List[str] = [], 
-            childs: List[str] = []
+            after: List[str] = None, 
+            childs: List[str] = None
         ):
         self.worker_pool = worker_pool
         self.name = name
@@ -52,8 +52,14 @@ class WebQueriedWorker:
         self.runtime_status = WebQueriedWorkerStatus.Pending
 
         self.parent = parent
-        self.after = after
-        self.childs = childs
+        if after is None:
+            self.after = []
+        else:
+            self.after = after
+        if childs is None:
+            self.childs = []
+        else:
+            self.childs = childs
 
     def to_dict(self):
         # with self.worker_log_lock:
