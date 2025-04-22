@@ -40,6 +40,7 @@ class WebQueriedWorker:
         self.start_date = None
         self.finish_date = None
         self._runtime_status = None
+        self.progress = None  # set this at 0. if you need it, and then in child class you need to update this value
 
         if thread_func is None:
             self.worker = Thread(target=self.main)
@@ -72,6 +73,7 @@ class WebQueriedWorker:
                 'start_date': str(self.start_date), 
                 'finish_date': str(self.finish_date),
                 'log': self.log,
+                'progress': self.progress,
                 'after': self.after,
                 'childs': self.childs,
                 'parent': self.parent
