@@ -2,9 +2,8 @@ from enum import Enum
 from hashlib import md5
 from random import randbytes
 from datetime import datetime
-from typing import List, Callable
-from time import sleep
-from threading import Thread, Lock
+from typing import List, Optional
+import asyncio
 
 
 class WebQueriedWorkerStatus(Enum):
@@ -25,45 +24,31 @@ WORKER_BAD_STATUSES = {
 
 class WebQueriedWorker:
     def __init__(
-            self, 
-            worker_pool: 'WebQueriedWorkerPool',
-            thread_func: Callable = None, 
-            name: str = 'WebQueriedWorker', 
-            parent: str = None, 
-            after: List[str] = None, 
-            childs: List[str] = None
-        ):
+        self,
+        worker_pool: 'WebQueriedWorkerPool',
+        name: str = 'WebQueriedWorker',
+        parent: Optional[str] = None,
+        after: Optional[List[str]] = None,
+        childs: Optional[List[str]] = None
+    ):
         self.worker_pool = worker_pool
         self.name = name
-        self.id = md5(randbytes(256)).hexdigest()
+        self.id = md5(randbytes(16)).hexdigest()
         self.create_date = datetime.now()
-        self.start_date = None
-        self.finish_date = None
-        self._runtime_status = None
-        self.progress = None  # set this at 0. if you need it, and then in child class you need to update this value
-
-        if thread_func is None:
-            self.worker = Thread(target=self.main)
-        else:
-            self.worker = Thread(target=thread_func)
-        
+        self.start_date: Optional[datetime] = None
+        self.finish_date: Optional[datetime] = None
+        self._runtime_status: Optional[WebQueriedWorkerStatus] = None
+        self.progress: Optional[float] = None
         self.worker_log = ''
-        # self.worker_log_lock = Lock()
-
+        self._task: Optional[asyncio.Task] = None
+        
         self.runtime_status = WebQueriedWorkerStatus.Pending
-
+        
         self.parent = parent
-        if after is None:
-            self.after = []
-        else:
-            self.after = after
-        if childs is None:
-            self.childs = []
-        else:
-            self.childs = childs
+        self.after = after or []
+        self.childs = childs or []
 
     def to_dict(self):
-        # with self.worker_log_lock:
         ret = {
                 'class_name': self.__class__.__name__,
                 'id': self.id,
@@ -81,8 +66,7 @@ class WebQueriedWorker:
         return ret
 
     def write_to_log(self, message: str):
-        # with self.worker_log_lock:
-            self.worker_log += f'{str(datetime.now())}: {message}\n'
+        self.worker_log += f'{str(datetime.now())}: {message}\n'
     
     @property
     def is_child(self):
@@ -150,68 +134,73 @@ class WebQueriedWorker:
 
     @property
     def log(self):
-        # with self.worker_log_lock:
         ret = self.worker_log
         return ret
 
-    def start(self):
+    async def start(self):
         try:
             self.runtime_status = WebQueriedWorkerStatus.Running
-            self.worker.start()
+            self._task = asyncio.create_task(self._run_wrapper())
         except Exception as e:
             self.runtime_status = WebQueriedWorkerStatus.Failed
-            self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
+            await self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
 
-    def cancel(self):
-        self.runtime_status = WebQueriedWorkerStatus.Cancelled
+    async def _run_wrapper(self):
+        try:
+            await self.main()
+            if self.runtime_status == WebQueriedWorkerStatus.Running:
+                self.runtime_status = WebQueriedWorkerStatus.Finished
+        except Exception as e:
+            self.runtime_status = WebQueriedWorkerStatus.Failed
+            await self.write_to_log(f'Необработанная ошибка:\n{str(e)}')
 
-    def main(self):
-        pass
+    async def cancel(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                self.runtime_status = WebQueriedWorkerStatus.Cancelled
+
+    async def main(self):
+        raise NotImplementedError('Для запуска процесса необходимо переопределить метод main()')
 
 
 class WebQueriedWorkerPool:
     def __init__(self, max_running_workers: int = 10):
         self._workers: List[WebQueriedWorker] = []
-
-        # self.resource_lock = Lock()
-
         self.max_running_workers = max_running_workers
-        self.pending_starter = Thread(target=self._start_pending)
-        self.pending_starter_running = True
-        self.pending_starter.start()
+        self._pending_task: Optional[asyncio.Task] = None
+        self._running = False
 
-    def stop(self):
-        self.pending_starter_running = False
-        self.pending_starter.join()
+    async def start(self):
+        self._running = True
+        self._pending_task = asyncio.create_task(self._start_pending())
 
-    #region worker crud
-    def workers(self):
-        # with self.resource_lock:
-        ret = self._workers
-        return ret
+    async def stop(self):
+        """Корректная остановка пула"""
+        self._running = False
+        if self._pending_task:
+            await self._pending_task
 
-    def worker_by_id(self, worker_id: str):
+    @property
+    def workers(self) -> List[WebQueriedWorker]:
+        return self._workers
+
+    def worker_by_id(self, worker_id: str) -> WebQueriedWorker:
         try:
-            # self.resource_lock.acquire()
-            worker = next(filter(lambda x: x.id == worker_id, self._workers))
-            # self.resource_lock.release()
-            return worker
+            return next(w for w in self._workers if w.id == worker_id)
         except StopIteration:
-            # self.resource_lock.release()
-            raise FileNotFoundError()
+            raise FileNotFoundError(f"Worker {worker_id} not found")
         
-    def workers_by_id(self, worker_ids: List[str]):
-        # with self.resource_lock:
-        workers = list(filter(lambda x: x.id in worker_ids, self._workers))
-        return workers
+    def workers_by_id(self, worker_ids: List[str]) -> List[WebQueriedWorker]:
+        return [w for w in self._workers if w.id in worker_ids]
         
     def add_worker(self, worker: WebQueriedWorker):
-        # with self.resource_lock:
-            self._workers.append(worker)
+        self._workers.append(worker)
     
     def add_workers(self, workers: List[WebQueriedWorker]):
-        # with self.resource_lock:
-            self._workers.extend(workers)
+        self._workers.extend(workers)
 
     def delete_worker(self, worker_id: str):
         worker = self.worker_by_id(worker_id)
@@ -221,57 +210,51 @@ class WebQueriedWorkerPool:
             WebQueriedWorkerStatus.Finished, 
             WebQueriedWorkerStatus.PartiallyFailed
         ]:
-            # with self.resource_lock:
-                self._workers.remove(worker)
+            self._workers.remove(worker)
         else:
             raise Exception('Можно удалить процесс только в статусах "Ошибка", "Отменен", "Завершен", "Есть ошибки"')
     
-    def _pending_workers(self):
-        pending_workers = [x for x in self.workers() if x.status == 'Pending']
-        return pending_workers
+    def _pending_workers(self) -> List[WebQueriedWorker]:
+        return [w for w in self.workers if w.status == 'Pending']
     
     @property
-    def running_count(self):
-        return len([x for x in self.workers() if x.status == 'Running'])
-    #endregion
+    def running_count(self) -> int:
+        return len([w for w in self.workers if w.status == 'Running'])
 
-    def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker):
+    async def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker) -> str:
         if worker.after:
             after_workers = self.workers_by_id(worker.after)
-            if any([x.runtime_status in WORKER_BAD_STATUSES for x in after_workers]):
+            if any(w.runtime_status in WORKER_BAD_STATUSES for w in after_workers):
                 return 'cancel'
             
-            if any([x.runtime_status != WebQueriedWorkerStatus.Finished for x in after_workers]):
+            if any(w.runtime_status != WebQueriedWorkerStatus.Finished for w in after_workers):
                 return 'wait'
-        
         return 'run'
-
-    #region worker-invoked checks
-    def worker_should_partially_fail(self, worker: WebQueriedWorker):
+    
+    async def worker_should_partially_fail(self, worker: WebQueriedWorker) -> bool:
         if worker.childs:
             child_workers = self.workers_by_id(worker.childs)
-            if any([x.runtime_status in WORKER_BAD_STATUSES for x in child_workers]):
-                return True
+            return any(w.runtime_status in WORKER_BAD_STATUSES for w in child_workers)
         return False
-    #endregion
-    
-    def _start_pending(self):
-        while self.pending_starter_running:
-            sleep(3.)
+
+    async def _start_pending(self):
+        while self._running:
+            await asyncio.sleep(0.1)
+            
             pending_workers = self._pending_workers()
             for worker in pending_workers:
                 if self.running_count >= self.max_running_workers:
                     break
 
-                action = self._check_worker_dependencies_before_start(worker)
+                action = await self._check_worker_dependencies_before_start(worker)
                 match action:
                     case 'wait':
                         continue
                     case 'cancel':
-                        worker.cancel()
+                        await worker.cancel()
                         continue
                     case 'run':
-                        worker.start()
+                        await worker.start()
                         continue
                     case _:
                         continue
