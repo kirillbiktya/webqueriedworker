@@ -98,7 +98,6 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.Finished
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Завершен процесс {self.name}')
-                    del self.worker
                 else:
                     raise Exception('Нельзя завершить процесс вне статуса "Работает"')
             case 'Failed':
@@ -106,7 +105,6 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.Failed
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Процесс {self.name} завершился с необрабатываемой ошибкой')
-                    del self.worker
                 else:
                     raise Exception('Нельзя установить статус "Ошибка" процессу вне статуса "Работает"')
             case 'PartiallyFailed':
@@ -114,7 +112,6 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.PartiallyFailed
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Процесс {self.name} завершился с ошибками')
-                    del self.worker
                 else:
                     raise Exception('Нельзя установить статус "Есть ошибки" процессу вне статуса "Работает"')
             case 'Cancelled':
@@ -122,7 +119,6 @@ class WebQueriedWorker:
                     self._runtime_status = WebQueriedWorkerStatus.Cancelled
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Процесс {self.name} отменен из-за ошибок связанных процессов')
-                    del self.worker
                 else:
                     raise Exception('Нельзя установить статус "Отменен" процессу вне статуса "Ожидает"')
             case _:
