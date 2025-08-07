@@ -217,7 +217,7 @@ class WebQueriedWorkerPool:
     def running_count(self) -> int:
         return len([w for w in self.workers if w.status == 'Running'])
 
-    async def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker) -> str:
+    def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker) -> str:
         if worker.after:
             after_workers = self.workers_by_id(worker.after)
             if any(w.runtime_status in WORKER_BAD_STATUSES for w in after_workers):
@@ -227,7 +227,7 @@ class WebQueriedWorkerPool:
                 return 'wait'
         return 'run'
     
-    async def worker_should_partially_fail(self, worker: WebQueriedWorker) -> bool:
+    def worker_should_partially_fail(self, worker: WebQueriedWorker) -> bool:
         if worker.childs:
             child_workers = self.workers_by_id(worker.childs)
             return any(w.runtime_status in WORKER_BAD_STATUSES for w in child_workers)
@@ -242,7 +242,7 @@ class WebQueriedWorkerPool:
                 if self.running_count >= self.max_running_workers:
                     break
 
-                action = await self._check_worker_dependencies_before_start(worker)
+                action = self._check_worker_dependencies_before_start(worker)
                 match action:
                     case 'wait':
                         continue
