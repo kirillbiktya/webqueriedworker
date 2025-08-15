@@ -1,12 +1,16 @@
+import multiprocessing
 from enum import Enum
+from time import sleep
 from hashlib import md5
 from random import randbytes
 from datetime import datetime
-from typing import List, Optional
+from queue import Empty
 import asyncio
+from typing import Literal
 
 
 class WebQueriedWorkerStatus(Enum):
+    Initialization = -1
     Pending = 0
     Running = 1
     Finished = 2
@@ -24,180 +28,278 @@ WORKER_BAD_STATUSES = {
 
 class WebQueriedWorker:
     def __init__(
-        self,
-        worker_pool: 'WebQueriedWorkerPool',
-        name: str = 'WebQueriedWorker',
-        parent: Optional[str] = None,
-        after: Optional[List[str]] = None,
-        childs: Optional[List[str]] = None
-    ):
-        self.worker_pool = worker_pool
+            self,
+            name: str = 'WebQueriedWorker',
+            parent: str | None = None,
+            after: list[str] | None = None,
+            childs: list[str] | None = None
+        ):
+        self._process: multiprocessing.Process = None
+        self._manager = multiprocessing.Manager()
+        self._shared_data = self._manager.dict()
+        self._log_queue = multiprocessing.Queue()
+
+        self._shared_data['progress'] = -1.
+        self._shared_data['status'] = WebQueriedWorkerStatus.Initialization.value
+        self._shared_data['create_date'] = -1.
+        self._shared_data['start_date'] = -1.
+        self._shared_data['finish_date'] = -1.
+        self._shared_data['childs'] = self._manager.list()
+        self._shared_data['after'] = self._manager.list()
+
+        self._worker_log = ''
+
         self.name = name
         self.id = md5(randbytes(16)).hexdigest()
-        self.create_date = datetime.now()
-        self.start_date: Optional[datetime] = None
-        self.finish_date: Optional[datetime] = None
-        self._runtime_status: Optional[WebQueriedWorkerStatus] = None
-        self.progress: Optional[float] = None
-        self.worker_log = ''
-        self._task: Optional[asyncio.Task] = None
-        
-        self.runtime_status = WebQueriedWorkerStatus.Pending
-        
+
         self.parent = parent
         self.after = after or []
         self.childs = childs or []
 
-    def to_dict(self):
-        ret = {
-                'class_name': self.__class__.__name__,
-                'id': self.id,
-                'name': self.name,
-                'status': self.status,
-                'create_date': str(self.create_date), 
-                'start_date': str(self.start_date), 
-                'finish_date': str(self.finish_date),
-                'log': self.log,
-                'progress': self.progress,
-                'after': self.after,
-                'childs': self.childs,
-                'parent': self.parent
-            }
-        return ret
+        self.runtime_status = WebQueriedWorkerStatus.Pending
 
-    def write_to_log(self, message: str):
-        self.worker_log += f'{str(datetime.now())}: {message}\n'
+    def __del__(self):
+        self._manager.shutdown()
+
+    @property
+    def after(self) -> list[str]:
+        return self._shared_data['after']
+    
+    @after.setter
+    def after(self, value: list[str]):
+        for after in value:
+            self._shared_data['after'].append(after)
+
+    @property
+    def childs(self) -> list[str]:
+        return self._shared_data['childs']
+    
+    @childs.setter
+    def childs(self, value: list[str]):
+        for child in value:
+            self._shared_data['childs'].append(child)
+
+    @property
+    def create_date(self) -> datetime:
+        if self._shared_data['create_date'] < 0:
+            return None
+        else:
+            return datetime.fromtimestamp(self._shared_data['create_date'])
+
+    @create_date.setter
+    def create_date(self, value: datetime):
+        self._shared_data['create_date'] = value.timestamp()
     
     @property
-    def is_child(self):
-        return self.parent is not None
+    def start_date(self) -> datetime:
+        if self._shared_data['start_date'] < 0:
+            return None
+        else:
+            return datetime.fromtimestamp(self._shared_data['start_date'])
     
+    @start_date.setter
+    def start_date(self, value: datetime):
+        self._shared_data['start_date'] = value.timestamp()
+
     @property
-    def runtime_status(self):
-        return self._runtime_status
+    def finish_date(self) -> datetime:
+        if self._shared_data['finish_date'] < 0:
+            return None
+        else:
+            return datetime.fromtimestamp(self._shared_data['finish_date'])
+    
+    @finish_date.setter
+    def finish_date(self, value: datetime):
+        self._shared_data['finish_date'] = value.timestamp()
+
+    @property
+    def runtime_status(self) -> WebQueriedWorkerStatus:
+        return WebQueriedWorkerStatus(self._shared_data['status'])
     
     @runtime_status.setter
     def runtime_status(self, value: WebQueriedWorkerStatus):
+        # self._shared_data['status'] = value.value
         match value.name:
             case 'Pending':
-                if self._runtime_status is None:
-                    self._runtime_status = WebQueriedWorkerStatus.Pending
+                if self.runtime_status == WebQueriedWorkerStatus.Initialization:
+                    self._shared_data['status'] = WebQueriedWorkerStatus.Pending.value
                     self.create_date = datetime.now()
                     self.write_to_log(f'Создан процесс {self.name}')
                 else:
                     raise Exception('Нельзя установить статус "Ожидает"')
             case 'Running':
-                if self._runtime_status == WebQueriedWorkerStatus.Pending:
-                    self._runtime_status = WebQueriedWorkerStatus.Running
+                if self.runtime_status == WebQueriedWorkerStatus.Pending:
+                    self._shared_data['status'] = WebQueriedWorkerStatus.Running
                     self.start_date = datetime.now()
                     self.write_to_log(f'Запущен процесс {self.name}')
                 else:
                     raise Exception('Нельзя запустить процесс вне статуса "Ожидает"')
             case 'Finished':
-                if self._runtime_status == WebQueriedWorkerStatus.Running:
-                    self._runtime_status = WebQueriedWorkerStatus.Finished
+                if self.runtime_status == WebQueriedWorkerStatus.Running:
+                    self._shared_data['status'] = WebQueriedWorkerStatus.Finished
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Завершен процесс {self.name}')
                 else:
                     raise Exception('Нельзя завершить процесс вне статуса "Работает"')
             case 'Failed':
-                if self._runtime_status in {WebQueriedWorkerStatus.Running, WebQueriedWorkerStatus.Pending}:
-                    self._runtime_status = WebQueriedWorkerStatus.Failed
+                if self.runtime_status in {WebQueriedWorkerStatus.Running, WebQueriedWorkerStatus.Pending}:
+                    self._shared_data['status'] = WebQueriedWorkerStatus.Failed
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Процесс {self.name} завершился с необрабатываемой ошибкой')
                 else:
                     raise Exception('Нельзя установить статус "Ошибка" процессу вне статуса "Работает"')
             case 'PartiallyFailed':
-                if self._runtime_status == WebQueriedWorkerStatus.Running:
-                    self._runtime_status = WebQueriedWorkerStatus.PartiallyFailed
+                if self.runtime_status == WebQueriedWorkerStatus.Running:
+                    self._shared_data['status'] = WebQueriedWorkerStatus.PartiallyFailed
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Процесс {self.name} завершился с ошибками')
                 else:
                     raise Exception('Нельзя установить статус "Есть ошибки" процессу вне статуса "Работает"')
             case 'Cancelled':
-                if self._runtime_status == WebQueriedWorkerStatus.Pending:
-                    self._runtime_status = WebQueriedWorkerStatus.Cancelled
+                if self.runtime_status == WebQueriedWorkerStatus.Pending:
+                    self._shared_data['status'] = WebQueriedWorkerStatus.Cancelled
                     self.finish_date = datetime.now()
                     self.write_to_log(f'Процесс {self.name} отменен из-за ошибок связанных процессов')
                 else:
                     raise Exception('Нельзя установить статус "Отменен" процессу вне статуса "Ожидает"')
             case _:
                 pass
-
+    
     @property
-    def status(self):
+    def status(self) -> str:
         return self.runtime_status.name
 
     @property
-    def log(self):
-        ret = self.worker_log
-        return ret
+    def progress(self) -> float:
+        return self._shared_data['progress']
+    
+    @progress.setter
+    def progress(self, value: float):
+        self._shared_data['progress'] = value
 
-    async def start(self):
+    def _shrink_queue_to_log(self):
+        while not self._log_queue.empty():
+            try:
+                self._worker_log += self._log_queue.get(block=False)
+            except Empty:
+                break
+        
+        self._log_queue.close()
+
+    @property
+    def log(self) -> str:
+        if self._log_queue.empty():
+            return self._worker_log
+        else:
+            while not self._log_queue.empty():
+                try:
+                    self._worker_log += self._log_queue.get(block=False)
+                except Empty:
+                    break
+
+            return self._worker_log
+
+    def write_to_log(self, message: str):
+        self._log_queue.put(f'{datetime.now().isoformat()}: {message}\n')
+
+    @property
+    def is_child(self) -> bool:
+        return self.parent is not None
+
+    def to_dict(self):
+        return {
+            'class_name': self.__class__.__name__,
+            'id': self.id,
+            'name': self.name,
+            'status': self.status,
+            'create_date': self.create_date.timestamp() if self.create_date is not None else None, 
+            'start_date': self.start_date.timestamp() if self.start_date is not None else None,
+            'finish_date': self.finish_date.timestamp() if self.finish_date is not None else None,
+            'log': self.log,
+            'progress': self.progress,
+            'after': self.after,
+            'childs': self.childs,
+            'parent': self.parent
+        }
+
+    def start(self):
         try:
             self.runtime_status = WebQueriedWorkerStatus.Running
-            self._task = asyncio.create_task(self._run_wrapper())
+            self._process = multiprocessing.Process(target=self._async_main_wrapper, daemon=True)
+            self._process.start()
         except Exception as e:
             self.runtime_status = WebQueriedWorkerStatus.Failed
-            await self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
+            self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
 
-    async def _run_wrapper(self):
+    def cancel(self):
+        self._log_queue.close()
+        self.runtime_status = WebQueriedWorkerStatus.Cancelled
+
+    def finish_process(self):
+        # https://docs.python.org/3/library/multiprocessing.html#all-start-methods
+
+        if self.runtime_status in {
+            WebQueriedWorkerStatus.Finished, 
+            WebQueriedWorkerStatus.Failed, 
+            WebQueriedWorkerStatus.PartiallyFailed
+        }:
+            self._shrink_queue_to_log()  # Joining processes that use queues
+            self._process.join()  # Joining zombie processes
+            self._process.close()
+
+    def _async_main_wrapper(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            await self.main()
-            if self.runtime_status == WebQueriedWorkerStatus.Running:
-                self.runtime_status = WebQueriedWorkerStatus.Finished
-        except Exception as e:
-            self.runtime_status = WebQueriedWorkerStatus.Failed
-            await self.write_to_log(f'Необработанная ошибка:\n{str(e)}')
-
-    async def cancel(self):
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                self.runtime_status = WebQueriedWorkerStatus.Cancelled
+            loop.run_until_complete(self.main())
+        finally:
+            loop.close()
 
     async def main(self):
-        raise NotImplementedError('Для запуска процесса необходимо переопределить метод main()')
+        raise NotImplementedError
 
 
 class WebQueriedWorkerPool:
-    def __init__(self, max_running_workers: int = 10):
-        self._workers: List[WebQueriedWorker] = []
-        self.max_running_workers = max_running_workers
-        self._pending_task: Optional[asyncio.Task] = None
-        self._running = False
+    # Да, реализация странная, все вроде синхронное, но stop() нет. 
+    # В текущем функционале меня такое в целом устраивает
 
-    async def start(self):
+    def __init__(self, max_running_workers: int = 10):
+        self._workers: list[WebQueriedWorker] = []
+        self.max_running_workers = max_running_workers
+        self._running = False
+        self._main_loop_coro = None
+
+    def start(self):
         self._running = True
-        self._pending_task = asyncio.create_task(self._start_pending())
+        self._main_loop_coro = asyncio.to_thread(self.main_loop)
 
     async def stop(self):
-        """Корректная остановка пула"""
         self._running = False
-        if self._pending_task:
-            await self._pending_task
+        await self._main_loop_coro
 
     @property
-    def workers(self) -> List[WebQueriedWorker]:
+    def workers(self) -> list[WebQueriedWorker]:
         return self._workers
 
     def worker_by_id(self, worker_id: str) -> WebQueriedWorker:
         try:
             return next(w for w in self._workers if w.id == worker_id)
         except StopIteration:
-            raise FileNotFoundError(f"Worker {worker_id} not found")
-        
-    def workers_by_id(self, worker_ids: List[str]) -> List[WebQueriedWorker]:
+            raise FileNotFoundError(f"Процесс {worker_id} не найден")
+    
+    def workers_by_id(self, worker_ids: list[str]) -> list[WebQueriedWorker]:
         return [w for w in self._workers if w.id in worker_ids]
-        
+    
+    def workers_by_class_name_and_status(self, class_name: str, statuses: list[str]) -> list[WebQueriedWorker]:
+        return [w for w in self._workers if w.__class__.__name__ == class_name and w.status in statuses]
+    
     def add_worker(self, worker: WebQueriedWorker):
         self._workers.append(worker)
-    
-    def add_workers(self, workers: List[WebQueriedWorker]):
-        self._workers.extend(workers)
 
+    def add_workers(self, workers: list[WebQueriedWorker]):
+        for worker in workers:
+            self._workers.append(worker)
+    
     def delete_worker(self, worker_id: str):
         worker = self.worker_by_id(worker_id)
         if worker.runtime_status in [
@@ -206,18 +308,24 @@ class WebQueriedWorkerPool:
             WebQueriedWorkerStatus.Finished, 
             WebQueriedWorkerStatus.PartiallyFailed
         ]:
-            self._workers.remove(worker)
+            try:
+                self._workers.remove(worker)
+            except ValueError:
+                raise Exception(f'Процесс {worker_id} не найден')
         else:
             raise Exception('Можно удалить процесс только в статусах "Ошибка", "Отменен", "Завершен", "Есть ошибки"')
     
-    def _pending_workers(self) -> List[WebQueriedWorker]:
-        return [w for w in self.workers if w.status == 'Pending']
+    def _pending_workers(self) -> list[WebQueriedWorker]:
+        return [w for w in self._workers if w.status == 'Pending']
+    
+    def _finished_workers(self) -> list[WebQueriedWorker]:
+        return [w for w in self._workers if w.status in ['Finished', 'PartiallyFailed', 'Failed']]
     
     @property
     def running_count(self) -> int:
         return len([w for w in self.workers if w.status == 'Running'])
-
-    def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker) -> str:
+    
+    def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker) -> Literal['run', 'cancel', 'wait']:
         if worker.after:
             after_workers = self.workers_by_id(worker.after)
             if any(w.runtime_status in WORKER_BAD_STATUSES for w in after_workers):
@@ -232,10 +340,10 @@ class WebQueriedWorkerPool:
             child_workers = self.workers_by_id(worker.childs)
             return any(w.runtime_status in WORKER_BAD_STATUSES for w in child_workers)
         return False
-
-    async def _start_pending(self):
+    
+    def main_loop(self):
         while self._running:
-            await asyncio.sleep(0.1)
+            sleep(1)
             
             pending_workers = self._pending_workers()
             for worker in pending_workers:
@@ -247,10 +355,12 @@ class WebQueriedWorkerPool:
                     case 'wait':
                         continue
                     case 'cancel':
-                        await worker.cancel()
+                        worker.cancel()
                         continue
                     case 'run':
-                        await worker.start()
+                        worker.start()
                         continue
-                    case _:
-                        continue
+            
+            finished_workers = self._finished_workers()
+            for worker in finished_workers:
+                worker.finish_process()
