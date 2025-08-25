@@ -38,6 +38,7 @@ class WebQueriedWorker:
         self._manager = multiprocessing.Manager()
         self._shared_data = self._manager.dict()
         self._log_queue = multiprocessing.Queue()
+        self._finished_by_pool = False
 
         self._shared_data['progress'] = -1.
         self._shared_data['status'] = WebQueriedWorkerStatus.Initialization.value
@@ -177,15 +178,6 @@ class WebQueriedWorker:
     def progress(self, value: float):
         self._shared_data['progress'] = value
 
-    def _shrink_queue_to_log(self):
-        while not self._log_queue.empty():
-            try:
-                self._worker_log += self._log_queue.get(block=False)
-            except Empty:
-                break
-        
-        self._log_queue.close()
-
     @property
     def log(self) -> str:
         if self._log_queue.empty():
@@ -232,7 +224,6 @@ class WebQueriedWorker:
             self.write_to_log(f'Ошибка при запуске процесса:\n{str(e)}')
 
     def cancel(self):
-        self._log_queue.close()
         self.runtime_status = WebQueriedWorkerStatus.Cancelled
 
     def finish_process(self):
@@ -241,11 +232,21 @@ class WebQueriedWorker:
         if self.runtime_status in {
             WebQueriedWorkerStatus.Finished, 
             WebQueriedWorkerStatus.Failed, 
-            WebQueriedWorkerStatus.PartiallyFailed
+            WebQueriedWorkerStatus.PartiallyFailed,
+            WebQueriedWorkerStatus.Cancelled
         }:
-            self._shrink_queue_to_log()  # Joining processes that use queues
-            self._process.join()  # Joining zombie processes
-            self._process.close()
+            # Joining processes that use queues
+            while not self._log_queue.empty():
+                try:
+                    self._worker_log += self._log_queue.get(block=False)
+                except Empty:
+                    break
+            
+            self._log_queue.close()
+            if self._process is not None:
+                self._process.join()  # Joining zombie processes
+                self._process.close()
+            self._finished_by_pool = True
 
     def _async_main_wrapper(self):
         loop = asyncio.new_event_loop()
@@ -254,6 +255,25 @@ class WebQueriedWorker:
             loop.run_until_complete(self.main())
         finally:
             loop.close()
+
+    def _preflight_check(self, worker_pool: 'WebQueriedWorkerPool'):
+        '''
+        Вызывается в `WebQueriedWorkerPool.add_worker()` и `WebQueriedWorkerPool.add_workers()`, 
+        передает `WebQueriedWorkerPool` как единственный аргумент.
+
+        По задумке должен использоваться для проверки дублирующих процессов:
+        ```python
+        already_running_workers = [
+            x for x in worker_pool.workers
+            if isinstance(x, WebQueriedWorker) and x.status in ['Pending', 'Running'] 
+        ]
+        duplicate_workers = [x.id for x in already_running_workers if x.df_name == self.df_name]
+        if duplicate_workers:
+            raise WorkerCreationException('Одновременно может существовать не больше одного процесса.')
+
+        ```
+        '''
+        raise NotImplementedError
 
     async def main(self):
         raise NotImplementedError
@@ -290,15 +310,27 @@ class WebQueriedWorkerPool:
     def workers_by_id(self, worker_ids: list[str]) -> list[WebQueriedWorker]:
         return [w for w in self._workers if w.id in worker_ids]
     
-    def workers_by_class_name_and_status(self, class_name: str, statuses: list[str]) -> list[WebQueriedWorker]:
-        return [w for w in self._workers if w.__class__.__name__ == class_name and w.status in statuses]
+    def workers_by_class_names_and_status(self, class_names: list[str], statuses: list[str]) -> list[WebQueriedWorker]:
+        return [w for w in self._workers if w.__class__.__name__ in class_names and w.status in statuses]
     
     def add_worker(self, worker: WebQueriedWorker):
+        try:
+            worker._preflight_check(self)
+        except NotImplementedError:
+            pass
+
         self._workers.append(worker)
 
     def add_workers(self, workers: list[WebQueriedWorker]):
+        # если префлайт чек не выполнен хоть у одного - не добавится ни один
+        for worker in workers:
+            try:
+                worker._preflight_check(self)
+            except NotImplementedError:
+                pass
         for worker in workers:
             self._workers.append(worker)
+            
     
     def delete_worker(self, worker_id: str):
         worker = self.worker_by_id(worker_id)
@@ -319,13 +351,16 @@ class WebQueriedWorkerPool:
         return [w for w in self._workers if w.status == 'Pending']
     
     def _finished_workers(self) -> list[WebQueriedWorker]:
-        return [w for w in self._workers if w.status in ['Finished', 'PartiallyFailed', 'Failed']]
+        return [
+            w for w in self._workers 
+            if w.status in ['Finished', 'PartiallyFailed', 'Failed'] and not w._finished_by_pool
+        ]
     
     @property
     def running_count(self) -> int:
         return len([w for w in self.workers if w.status == 'Running'])
     
-    def _check_worker_dependencies_before_start(self, worker: WebQueriedWorker) -> Literal['run', 'cancel', 'wait']:
+    def _dependencies_check(self, worker: WebQueriedWorker) -> Literal['run', 'cancel', 'wait']:
         if worker.after:
             after_workers = self.workers_by_id(worker.after)
             if any(w.runtime_status in WORKER_BAD_STATUSES for w in after_workers):
@@ -350,7 +385,7 @@ class WebQueriedWorkerPool:
                 if self.running_count >= self.max_running_workers:
                     break
 
-                action = self._check_worker_dependencies_before_start(worker)
+                action = self._dependencies_check(worker)
                 match action:
                     case 'wait':
                         continue
