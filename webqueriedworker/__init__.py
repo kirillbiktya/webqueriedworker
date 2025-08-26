@@ -26,6 +26,10 @@ WORKER_BAD_STATUSES = {
     WebQueriedWorkerStatus.PartiallyFailed
 }
 
+WORKER_FINAL_STATUSES = {
+    *WORKER_BAD_STATUSES,
+    WebQueriedWorkerStatus.Finished
+}
 
 class WebQueriedWorker:
     def __init__(
@@ -398,7 +402,15 @@ class WebQueriedWorkerPool:
                 return 'wait'
         return 'run'
     
-    def worker_should_partially_fail(self, worker: WebQueriedWorker) -> bool:
+    def worker_must_wait(self, worker_id: str) -> bool:
+        worker = self.worker_by_id(worker_id)
+        if worker.childs:
+            child_workers = self.workers_by_id(worker.childs)
+            return any(w.runtime_status not in WORKER_FINAL_STATUSES for w in child_workers)
+        return False
+    
+    def worker_should_partially_fail(self, worker_id: str) -> bool:
+        worker = self.worker_by_id(worker_id)
         if worker.childs:
             child_workers = self.workers_by_id(worker.childs)
             return any(w.runtime_status in WORKER_BAD_STATUSES for w in child_workers)
