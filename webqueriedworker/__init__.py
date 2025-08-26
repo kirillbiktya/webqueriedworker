@@ -55,9 +55,13 @@ class WebQueriedWorker:
         self.id = md5(randbytes(16)).hexdigest()
 
         self.parent = parent
-        self.after = after or []
-        self.childs = childs or []
-
+        if after:
+            for i in after:
+                self.add_after(i)
+        if childs:
+            for i in childs:
+                self.add_child(i)
+        
         self.runtime_status = WebQueriedWorkerStatus.Pending
 
     def __del__(self):
