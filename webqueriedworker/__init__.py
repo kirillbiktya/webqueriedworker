@@ -1,5 +1,6 @@
 import multiprocessing
 from enum import Enum
+import threading
 from time import sleep
 from hashlib import md5
 from random import randbytes
@@ -64,21 +65,39 @@ class WebQueriedWorker:
 
     @property
     def after(self) -> list[str]:
-        return self._shared_data['after']
+        return list(self._shared_data['after'])
     
-    @after.setter
-    def after(self, value: list[str]):
-        for after in value:
-            self._shared_data['after'].append(after)
+    def add_after(self, value: str):
+        if value in self.childs:
+            raise Exception('Блокирующий процесс уже существует')
+        elif value == self.id:
+            raise Exception('Нельзя добавить себя в список блокирующих процессов')
+        
+        self._shared_data['after'].append(value)
+
+    def remove_after(self, value: str):
+        try:
+            self._shared_data['after'].remove(value)
+        except ValueError:
+            raise Exception('Блокирующий процесс не существует')
 
     @property
     def childs(self) -> list[str]:
-        return self._shared_data['childs']
+        return list(self._shared_data['childs'])
     
-    @childs.setter
-    def childs(self, value: list[str]):
-        for child in value:
-            self._shared_data['childs'].append(child)
+    def add_child(self, value: str):
+        if value in self.childs:
+            raise Exception('Дочерний процесс уже существует')
+        elif value == self.id:
+            raise Exception('Нельзя добавить себя в список дочерних процессов')
+        
+        self._shared_data['childs'].append(value)
+
+    def remove_child(self, value: str):
+        try:
+            self._shared_data['childs'].remove(value)
+        except ValueError:
+            raise Exception('Дочерний процесс не существует')
 
     @property
     def create_date(self) -> datetime:
@@ -171,7 +190,10 @@ class WebQueriedWorker:
         return self.runtime_status.name
 
     @property
-    def progress(self) -> float:
+    def progress(self) -> float | None:
+        if self._shared_data['progress'] < 0:
+            return None
+        
         return self._shared_data['progress']
     
     @progress.setter
@@ -180,6 +202,9 @@ class WebQueriedWorker:
 
     @property
     def log(self) -> str:
+        if self._finished_by_pool:
+            return self._worker_log
+        
         if self._log_queue.empty():
             return self._worker_log
         else:
@@ -280,22 +305,21 @@ class WebQueriedWorker:
 
 
 class WebQueriedWorkerPool:
-    # Да, реализация странная, все вроде синхронное, но stop() нет. 
-    # В текущем функционале меня такое в целом устраивает
-
     def __init__(self, max_running_workers: int = 10):
         self._workers: list[WebQueriedWorker] = []
         self.max_running_workers = max_running_workers
         self._running = False
-        self._main_loop_coro = None
+        self._main_loop_thread = None
 
     def start(self):
         self._running = True
-        self._main_loop_coro = asyncio.to_thread(self.main_loop)
+        self._main_loop_thread = threading.Thread(target=self.main_loop)
+        self._main_loop_thread.start()
 
-    async def stop(self):
+    def stop(self):
         self._running = False
-        await self._main_loop_coro
+        if self._main_loop_thread and self._main_loop_thread.is_alive():
+            self._main_loop_thread.join(timeout=5.0)
 
     @property
     def workers(self) -> list[WebQueriedWorker]:
